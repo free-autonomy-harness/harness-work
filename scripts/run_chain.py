@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_IMAGE = "nousresearch/hermes-agent@sha256:ef0650d523ee1b5ab32c779acabc446d9936869a9932591553688a62bcf0c42f"
-NVIDIA_GLM53_FLASH = "zai-org/glm-5.3-flash"
+NVIDIA_GLM53_FLASH = "z-ai/glm-5.3-flash"
 NVIDIA_ULTRA = "nvidia/nemotron-3-ultra-550b-a55b"
 NVIDIA_SUPER_VL = "nvidia/nemotron-3.5-super-vl-120b-a12b"
 GROQ_OSS = "openai/gpt-oss-120b"
