@@ -15,4 +15,4 @@ Hermes worker: получает issue, запускает модель, отда
 bash tests/test_runner.sh
 ```
 
-Секреты: `KILOCODE_API_KEY`, `NVIDIA_API_KEY`, `GROQ_API_KEY`.
+Секреты: `NVIDIA_API_KEY`, `GROQ_API_KEY`.

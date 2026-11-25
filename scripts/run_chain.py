@@ -21,9 +21,16 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_IMAGE = "nousresearch/hermes-agent@sha256:ef0650d523ee1b5ab32c779acabc446d9936869a9932591553688a62bcf0c42f"
-KILO_ULTRA = "nvidia/nemotron-3-ultra-550b-a55b:free"
+NVIDIA_GLM53_FLASH = "zai-org/glm-5.3-flash"
 NVIDIA_ULTRA = "nvidia/nemotron-3-ultra-550b-a55b"
+NVIDIA_SUPER_VL = "nvidia/nemotron-3.5-super-vl-120b-a12b"
 GROQ_OSS = "openai/gpt-oss-120b"
+
+ALLOWED_NVIDIA_MODELS = {
+    NVIDIA_GLM53_FLASH,
+    NVIDIA_ULTRA,
+    NVIDIA_SUPER_VL,
+}
 
 
 class ChainError(RuntimeError):
@@ -48,16 +55,9 @@ def validate_chain(chain: list[dict[str, Any]]) -> None:
         if name in names:
             raise ChainError(f"duplicate route name: {name}")
         names.add(name)
-        if provider == "kilocode":
-            if not model.startswith("nvidia/nemotron-") or not model.endswith(":free"):
-                raise ChainError(f"{name}: Kilo allows only free Nemotron models, got {model}")
-            if "glm" in model.lower():
-                raise ChainError(f"{name}: GLM is paid on Kilo and is not allowed")
-            if key_env != "KILOCODE_API_KEY":
-                raise ChainError(f"{name}: kilocode route must use KILOCODE_API_KEY")
-        elif provider == "nvidia":
-            if not model.startswith("nvidia/nemotron-"):
-                raise ChainError(f"{name}: NVIDIA allows only Nemotron, got {model}")
+        if provider == "nvidia":
+            if model not in ALLOWED_NVIDIA_MODELS:
+                raise ChainError(f"{name}: NVIDIA model not allowed: {model}. Allowed: {sorted(ALLOWED_NVIDIA_MODELS)}")
             if key_env != "NVIDIA_API_KEY":
                 raise ChainError(f"{name}: nvidia route must use NVIDIA_API_KEY")
         elif provider == "groq":
@@ -156,12 +156,37 @@ def docker_command(
 ) -> list[str]:
     uid = os.getuid()
     gid = os.getgid()
+    script_dir = Path(__file__).parent.resolve()
+    egress_script = script_dir / "egress-allowlist.sh"
+    provider = str(route["provider"])
+    model = str(route["model"])
+    # Hermes command (what we would run directly)
+    hermes_cmd = [
+        "-z",
+        prompt,
+        "--provider",
+        provider,
+        "-m",
+        model,
+        "--toolsets",
+        "file,terminal",
+        "--safe-mode",
+        "--ignore-user-config",
+        "--in",
+        "/workspace",
+        "--usage-file",
+        f"/out/usage-{route['name']}.json",
+    ]
+    # Wrap with egress allowlist entrypoint
     cmd = [
         "docker",
         "run",
         "--rm",
         "--name",
         container_name,
+        # Capabilities needed for iptables inside container
+        "--cap-add=NET_ADMIN",
+        "--cap-add=NET_RAW",
         # Образ использует s6-overlay и должен стартовать как root/PID 1.
         # HERMES_UID/HERMES_GID переmap-ят пользователя hermes на host UID,
         # чтобы файлы в /workspace принадлежали runner-пользователю.
@@ -177,23 +202,17 @@ def docker_command(
         f"{workspace}:/workspace",
         "-v",
         f"{out_dir}:/out",
+        "-v",
+        f"{egress_script}:/egress-allowlist.sh:ro",
         "-w",
         "/workspace",
+        "--entrypoint",
+        "/egress-allowlist.sh",
         image,
-        "-z",
-        prompt,
-        "--provider",
-        str(route["provider"]),
-        "-m",
-        str(route["model"]),
-        "--toolsets",
-        "file,terminal",
-        "--safe-mode",
-        "--ignore-user-config",
-        "--in",
-        "/workspace",
-        "--usage-file",
-        f"/out/usage-{route['name']}.json",
+        provider,
+        model,
+        "--",
+        *hermes_cmd,
     ]
     return cmd
 
@@ -208,6 +227,9 @@ def run_route(
     timeout: int,
     image: str,
 ) -> dict[str, Any]:
+    # Per-route timeout (timeout_seconds в chain) важнее глобального:
+    # GLM-5.3-Flash на Cloudflare холодно стартует и требует больше времени.
+    timeout = int(route.get("timeout_seconds") or timeout)
     reset_workspace(base, workspace)
     env_values = route_environment(route)
     env_file = out_dir / f"env-{route['name']}.tmp"

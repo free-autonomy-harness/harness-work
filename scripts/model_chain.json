@@ -1,20 +1,30 @@
 [
   {
-    "name": "nemotron-ultra-kilo",
-    "provider": "kilocode",
-    "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "key_env": "KILOCODE_API_KEY"
+    "name": "glm-5.3-flash-nvidia",
+    "provider": "nvidia",
+    "model": "zai-org/glm-5.3-flash",
+    "key_env": "NVIDIA_API_KEY",
+    "timeout_seconds": 2400
   },
   {
     "name": "nemotron-ultra-nvidia",
     "provider": "nvidia",
     "model": "nvidia/nemotron-3-ultra-550b-a55b",
-    "key_env": "NVIDIA_API_KEY"
+    "key_env": "NVIDIA_API_KEY",
+    "timeout_seconds": 1800
+  },
+  {
+    "name": "nemotron-super-vl-nvidia",
+    "provider": "nvidia",
+    "model": "nvidia/nemotron-3.5-super-vl-120b-a12b",
+    "key_env": "NVIDIA_API_KEY",
+    "timeout_seconds": 1200
   },
   {
     "name": "gpt-oss-groq",
     "provider": "groq",
     "model": "openai/gpt-oss-120b",
-    "key_env": "GROQ_API_KEY"
+    "key_env": "GROQ_API_KEY",
+    "timeout_seconds": 900
   }
 ]
