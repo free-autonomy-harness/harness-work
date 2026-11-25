@@ -18,6 +18,3 @@ bash tests/test_runner.sh
 
 Секреты: `NVIDIA_API_KEY`, `GROQ_API_KEY`.
 =======
-# work
-here we writing code
->>>>>>> b626e9513aa01587a36c3280bd9c5bf987f36120
