@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+"""Model chain runner: Hermes в Docker, fallback по маршрутам, сборка патча.
+
+Один маршрут = один контейнер. Workspace сбрасывается перед каждой попыткой.
+Ключ маршрута передаётся только в его контейнер через env-file (mode 0600).
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+DEFAULT_IMAGE = "nousresearch/hermes-agent@sha256:ef0650d523ee1b5ab32c779acabc446d9936869a9932591553688a62bcf0c42f"
+KILO_ULTRA = "nvidia/nemotron-3-ultra-550b-a55b:free"
+NVIDIA_ULTRA = "nvidia/nemotron-3-ultra-550b-a55b"
+GROQ_OSS = "openai/gpt-oss-120b"
+
+
+class ChainError(RuntimeError):
+    pass
+
+
+def log(message: str) -> None:
+    print(f"[agent] {message}", flush=True)
+
+
+def validate_chain(chain: list[dict[str, Any]]) -> None:
+    if not chain:
+        raise ChainError("model chain is empty")
+    names: set[str] = set()
+    for route in chain:
+        name = str(route.get("name") or "")
+        provider = str(route.get("provider") or "")
+        model = str(route.get("model") or "")
+        key_env = str(route.get("key_env") or "")
+        if not name or not provider or not model or not key_env:
+            raise ChainError(f"incomplete route: {route}")
+        if name in names:
+            raise ChainError(f"duplicate route name: {name}")
+        names.add(name)
+        if provider == "kilocode":
+            if not model.startswith("nvidia/nemotron-") or not model.endswith(":free"):
+                raise ChainError(f"{name}: Kilo allows only free Nemotron models, got {model}")
+            if "glm" in model.lower():
+                raise ChainError(f"{name}: GLM is paid on Kilo and is not allowed")
+            if key_env != "KILOCODE_API_KEY":
+                raise ChainError(f"{name}: kilocode route must use KILOCODE_API_KEY")
+        elif provider == "nvidia":
+            if not model.startswith("nvidia/nemotron-"):
+                raise ChainError(f"{name}: NVIDIA allows only Nemotron, got {model}")
+            if key_env != "NVIDIA_API_KEY":
+                raise ChainError(f"{name}: nvidia route must use NVIDIA_API_KEY")
+        elif provider == "groq":
+            if model != GROQ_OSS:
+                raise ChainError(f"{name}: Groq is only for simple tasks ({GROQ_OSS}), got {model}")
+            if key_env != "GROQ_API_KEY":
+                raise ChainError(f"{name}: groq route must use GROQ_API_KEY")
+        else:
+            raise ChainError(f"{name}: unsupported provider {provider}")
+
+
+def route_environment(route: dict[str, Any]) -> dict[str, str]:
+    key_env = str(route["key_env"])
+    key = os.environ.get(key_env, "").strip()
+    if not key:
+        raise ChainError(f"{key_env} is not set")
+    return {key_env: key}
+
+
+def reset_workspace(base: Path, workspace: Path) -> None:
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True)
+    proc = subprocess.run(
+        ["rsync", "-a", "--exclude", ".git", f"{base}/", f"{workspace}/"],
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise ChainError(f"cannot reset workspace: {proc.stderr[-2000:]}")
+
+
+def make_patch(base: Path, workspace: Path, out_patch: Path) -> tuple[Path, list[str]]:
+    tmp = Path(tempfile.mkdtemp(prefix="harness-patch-"))
+    patchrepo = tmp / "patchrepo"
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(base), "worktree", "add", "--detach", str(patchrepo), "HEAD"],
+            text=True,
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            raise ChainError(f"git worktree add failed: {proc.stderr[-2000:]}")
+        sync = subprocess.run(
+            ["rsync", "-a", "--delete", "--exclude", ".git", f"{workspace}/", f"{patchrepo}/"],
+            text=True,
+            capture_output=True,
+        )
+        if sync.returncode != 0:
+            raise ChainError(f"rsync workspace failed: {sync.stderr[-2000:]}")
+        add = subprocess.run(["git", "-C", str(patchrepo), "add", "-A"], text=True, capture_output=True)
+        if add.returncode != 0:
+            raise ChainError(f"git add failed: {add.stderr[-2000:]}")
+        diff = subprocess.run(
+            ["git", "-C", str(patchrepo), "diff", "--cached", "--binary"],
+            text=True,
+            capture_output=True,
+        )
+        if diff.returncode != 0:
+            raise ChainError(f"git diff failed: {diff.stderr[-2000:]}")
+        if not diff.stdout.strip():
+            raise ChainError("empty patch")
+        out_patch.parent.mkdir(parents=True, exist_ok=True)
+        out_patch.write_text(diff.stdout, encoding="utf-8")
+        names = subprocess.run(
+            ["git", "-C", str(patchrepo), "diff", "--cached", "--name-only"],
+            text=True,
+            capture_output=True,
+        ).stdout.splitlines()
+        check = subprocess.run(
+            ["git", "-C", str(base), "apply", "--check", "--binary", str(out_patch)],
+            text=True,
+            capture_output=True,
+        )
+        if check.returncode != 0:
+            raise ChainError(f"generated patch does not apply: {check.stderr[-2000:]}")
+        return out_patch, [n for n in names if n]
+    finally:
+        subprocess.run(
+            ["git", "-C", str(base), "worktree", "remove", "--force", str(patchrepo)],
+            text=True,
+            capture_output=True,
+        )
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def docker_command(
+    route: dict[str, Any],
+    *,
+    prompt: str,
+    workspace: Path,
+    out_dir: Path,
+    env_file: Path,
+    image: str,
+    container_name: str,
+) -> list[str]:
+    uid = os.getuid()
+    gid = os.getgid()
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "--name",
+        container_name,
+        # Образ использует s6-overlay и должен стартовать как root/PID 1.
+        # HERMES_UID/HERMES_GID переmap-ят пользователя hermes на host UID,
+        # чтобы файлы в /workspace принадлежали runner-пользователю.
+        "-e",
+        f"HERMES_UID={uid}",
+        "-e",
+        f"HERMES_GID={gid}",
+        "-e",
+        "PYTHONUNBUFFERED=1",
+        "--env-file",
+        str(env_file),
+        "-v",
+        f"{workspace}:/workspace",
+        "-v",
+        f"{out_dir}:/out",
+        "-w",
+        "/workspace",
+        image,
+        "-z",
+        prompt,
+        "--provider",
+        str(route["provider"]),
+        "-m",
+        str(route["model"]),
+        "--toolsets",
+        "file,terminal",
+        "--safe-mode",
+        "--ignore-user-config",
+        "--in",
+        "/workspace",
+        "--usage-file",
+        f"/out/usage-{route['name']}.json",
+    ]
+    return cmd
+
+
+def run_route(
+    route: dict[str, Any],
+    *,
+    prompt: str,
+    base: Path,
+    workspace: Path,
+    out_dir: Path,
+    timeout: int,
+    image: str,
+) -> dict[str, Any]:
+    reset_workspace(base, workspace)
+    env_values = route_environment(route)
+    env_file = out_dir / f"env-{route['name']}.tmp"
+    env_file.write_text("".join(f"{k}={v}\n" for k, v in env_values.items()), encoding="utf-8")
+    env_file.chmod(0o600)
+    container_name = f"harness-{uuid.uuid4().hex[:12]}"
+    log_path = out_dir / f"route-{route['name']}.log"
+    started = time.monotonic()
+    try:
+        cmd = docker_command(
+            route,
+            prompt=prompt,
+            workspace=workspace,
+            out_dir=out_dir,
+            env_file=env_file,
+            image=image,
+            container_name=container_name,
+        )
+        proc = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout)
+        duration = round(time.monotonic() - started, 2)
+        output = proc.stdout + ("\n" + proc.stderr if proc.stderr else "")
+        log_path.write_text(redact(output, env_values.values()), encoding="utf-8")
+        if proc.returncode != 0:
+            return {
+                "route": route["name"],
+                "exit": proc.returncode,
+                "duration_s": duration,
+                "error": f"exit {proc.returncode}: {redact(proc.stderr[-2000:], env_values.values())}",
+            }
+        return {"route": route["name"], "exit": 0, "duration_s": duration, "error": None}
+    except subprocess.TimeoutExpired:
+        subprocess.run(["docker", "rm", "-f", container_name], text=True, capture_output=True)
+        return {
+            "route": route["name"],
+            "exit": None,
+            "duration_s": round(time.monotonic() - started, 2),
+            "error": f"timeout after {timeout}s",
+        }
+    except OSError as exc:
+        return {
+            "route": route["name"],
+            "exit": None,
+            "duration_s": round(time.monotonic() - started, 2),
+            "error": f"cannot start docker: {exc}",
+        }
+    finally:
+        env_file.unlink(missing_ok=True)
+
+
+def redact(text: str, secrets: Any) -> str:
+    result = text
+    for secret in secrets:
+        if secret and len(str(secret)) >= 4:
+            result = result.replace(str(secret), "***")
+    return result
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--chain", default=str(Path(__file__).with_name("model_chain.json")))
+    parser.add_argument("--prompt", required=True)
+    parser.add_argument("--base", required=True, help="target checkout на base SHA (с .git)")
+    parser.add_argument("--workspace", required=True)
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--target", required=True)
+    parser.add_argument("--issue", required=True, type=int)
+    parser.add_argument("--base-sha", required=True)
+    parser.add_argument("--timeout", type=int, default=int(os.environ.get("HERMES_TIMEOUT_SECONDS", "2700")))
+    parser.add_argument("--image", default=os.environ.get("HERMES_IMAGE", DEFAULT_IMAGE))
+    args = parser.parse_args(argv)
+
+    chain = json.loads(Path(args.chain).read_text(encoding="utf-8"))
+    validate_chain(chain)
+    prompt = Path(args.prompt).read_text(encoding="utf-8")
+    base = Path(args.base).resolve()
+    workspace = Path(args.workspace).resolve()
+    out_dir = Path(args.out).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    attempts: list[dict[str, Any]] = []
+    patch_path = out_dir / "patch.diff"
+    meta: dict[str, Any] = {
+        "target": args.target,
+        "issue": args.issue,
+        "base_sha": args.base_sha,
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "attempts": attempts,
+    }
+
+    for route in chain:
+        log(f"try {route['name']} ({route['provider']}/{route['model']})")
+        try:
+            attempt = run_route(
+                route,
+                prompt=prompt,
+                base=base,
+                workspace=workspace,
+                out_dir=out_dir,
+                timeout=args.timeout,
+                image=args.image,
+            )
+        except ChainError as exc:
+            attempt = {"route": route["name"], "exit": None, "error": str(exc)}
+        attempts.append(attempt)
+        if attempt.get("exit") != 0:
+            log(f"route {route['name']} failed: {attempt.get('error')}")
+            continue
+        try:
+            patch_path, files = make_patch(base, workspace, patch_path)
+        except ChainError as exc:
+            attempt["error"] = str(exc)
+            log(f"route {route['name']} produced no patch: {exc}")
+            continue
+
+        usage = out_dir / f"usage-{route['name']}.json"
+        if usage.exists():
+            shutil.copyfile(usage, out_dir / "usage.json")
+        meta.update(
+            {
+                "status": "success",
+                "route": route["name"],
+                "provider": route["provider"],
+                "model": route["model"],
+                "patch_sha256": sha256(patch_path),
+                "files": files,
+                "error": None,
+            }
+        )
+        (out_dir / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        log(f"success via {route['name']}, files={len(files)}")
+        return 0
+
+    meta["status"] = "failed"
+    meta["error"] = "all routes failed"
+    (out_dir / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    log("all routes failed")
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

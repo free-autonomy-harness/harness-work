@@ -1,0 +1,20 @@
+[
+  {
+    "name": "nemotron-ultra-kilo",
+    "provider": "kilocode",
+    "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "key_env": "KILOCODE_API_KEY"
+  },
+  {
+    "name": "nemotron-ultra-nvidia",
+    "provider": "nvidia",
+    "model": "nvidia/nemotron-3-ultra-550b-a55b",
+    "key_env": "NVIDIA_API_KEY"
+  },
+  {
+    "name": "gpt-oss-groq",
+    "provider": "groq",
+    "model": "openai/gpt-oss-120b",
+    "key_env": "GROQ_API_KEY"
+  }
+]

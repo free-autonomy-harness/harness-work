@@ -1,0 +1,132 @@
+name: work / agent
+run-name: agent ${{ inputs.target }} #${{ inputs.issue }}
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: target alias
+        required: true
+        type: string
+      issue:
+        description: issue number
+        required: true
+        type: string
+      base_sha:
+        description: target commit SHA to build the patch on
+        required: true
+        type: string
+      issue_repo:
+        description: owner/harness-core (issues live there)
+        required: true
+        type: string
+      target_repo:
+        description: owner/harness-sandbox
+        required: true
+        type: string
+      target_branch:
+        description: target default branch
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: work-agent-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout work
+        uses: actions/checkout@v4
+        with:
+          path: work
+          persist-credentials: false
+
+      - name: Resolve repo names
+        id: repos
+        env:
+          TARGET_REPO: ${{ inputs.target_repo }}
+          ISSUE_REPO: ${{ inputs.issue_repo }}
+        run: |
+          echo "target_name=${TARGET_REPO#*/}" >> "$GITHUB_OUTPUT"
+          echo "issue_name=${ISSUE_REPO#*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Target read token
+        id: target-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.repos.outputs.target_name }}
+          permission-contents: read
+
+      - name: Issue read token
+        id: issue-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.repos.outputs.issue_name }}
+          permission-issues: read
+
+      - name: Checkout target at base SHA
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.target_repo }}
+          ref: ${{ inputs.base_sha }}
+          token: ${{ steps.target-token.outputs.token }}
+          path: target
+          persist-credentials: false
+
+      - name: Build prompt
+        env:
+          GH_TOKEN: ${{ steps.issue-token.outputs.token }}
+          TARGET: ${{ inputs.target }}
+          ISSUE: ${{ inputs.issue }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          ISSUE_REPO: ${{ inputs.issue_repo }}
+        run: |
+          mkdir -p out
+          python work/scripts/fetch_issue.py \
+            --repo "$ISSUE_REPO" \
+            --issue "$ISSUE" \
+            --target "$TARGET" \
+            --base-sha "$BASE_SHA" \
+            --template work/scripts/prompt.md \
+            --out-dir out
+
+      - name: Run Hermes model chain
+        env:
+          KILOCODE_API_KEY: ${{ secrets.KILOCODE_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          HERMES_IMAGE: ${{ vars.HERMES_IMAGE || 'nousresearch/hermes-agent@sha256:ef0650d523ee1b5ab32c779acabc446d9936869a9932591553688a62bcf0c42f' }}
+          HERMES_TIMEOUT_SECONDS: "1500"
+          TARGET: ${{ inputs.target }}
+          ISSUE: ${{ inputs.issue }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          bash work/scripts/run_agent.sh \
+            "$PWD/target" \
+            "$PWD/workspace" \
+            "$PWD/out" \
+            "$PWD/out/prompt.txt" \
+            "$TARGET" \
+            "$ISSUE" \
+            "$BASE_SHA"
+
+      - name: Upload harness output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-output
+          path: out/
+          if-no-files-found: warn
+          retention-days: 7
