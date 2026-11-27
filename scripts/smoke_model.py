@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -20,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--route", required=True)
     parser.add_argument("--chain", default=str(Path(__file__).with_name("model_chain.json")))
     parser.add_argument("--timeout", type=int, default=600)
-    parser.add_argument("--image", default=DEFAULT_IMAGE)
+    parser.add_argument("--image", default=os.environ.get("HERMES_IMAGE", DEFAULT_IMAGE))
     args = parser.parse_args(argv)
 
     chain = json.loads(Path(args.chain).read_text(encoding="utf-8"))

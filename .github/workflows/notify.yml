@@ -48,4 +48,4 @@ jobs:
           CORE_REPO: ${{ vars.HARNESS_CORE_REPO || format('{0}/harness-core', github.repository_owner) }}
           WORK_REPO: ${{ github.repository }}
           ARTIFACT_DIR: artifact
-        run: python work/scripts/notify.py
+        run: python scripts/notify.py
