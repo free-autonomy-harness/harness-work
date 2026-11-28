@@ -29,6 +29,8 @@ jobs:
         run: |
           set +e
           python3 scripts/smoke_model.py --route "${{ matrix.route }}" \
+            --preflight \
+            --timeout "${{ vars.HERMES_SMOKE_TIMEOUT_SECONDS || '120' }}" \
             --json-out "result-${{ matrix.route }}.json"
           rc=$?
           set -e

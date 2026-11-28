@@ -23,6 +23,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--image", default=os.environ.get("HERMES_IMAGE", DEFAULT_IMAGE))
     parser.add_argument("--json-out", default=None, help="write machine-readable result here")
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="ignore route timeout_seconds and use --timeout (fast availability check)",
+    )
     args = parser.parse_args(argv)
 
     chain = json.loads(Path(args.chain).read_text(encoding="utf-8"))
@@ -46,8 +51,11 @@ def main(argv: list[str] | None = None) -> int:
             ["git", "-C", str(base), "-c", "user.name=harness", "-c", "user.email=harness@local", "commit", "-qm", "init"],
             check=True,
         )
+        run_route_route = dict(route)
+        if args.preflight:
+            run_route_route.pop("timeout_seconds", None)
         result = run_route(
-            route,
+            run_route_route,
             prompt="Reply with exactly: OK",
             base=base,
             workspace=workspace,
