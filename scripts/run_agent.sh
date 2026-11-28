@@ -22,4 +22,5 @@ python3 "${SCRIPT_DIR}/run_chain.py" \
   --target "${TARGET}" \
   --issue "${ISSUE}" \
   --base-sha "${BASE_SHA}" \
-  --image "${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:ef0650d523ee1b5ab32c779acabc446d9936869a9932591553688a62bcf0c42f}"
+  --image "${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:ef0650d523ee1b5ab32c779acabc446d9936869a9932591553688a62bcf0c42f}" \
+  --disabled-routes "${DISABLED_ROUTES:-}"

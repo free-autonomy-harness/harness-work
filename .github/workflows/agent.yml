@@ -107,6 +107,7 @@ jobs:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           HERMES_IMAGE: ${{ vars.HERMES_IMAGE || 'nousresearch/hermes-agent@sha256:ef0650d523ee1b5ab32c779acabc446d9936869a9932591553688a62bcf0c42f' }}
           HERMES_TIMEOUT_SECONDS: "1200"
+          DISABLED_ROUTES: ${{ vars.HERMES_DISABLED_ROUTES || '' }}
           TARGET: ${{ inputs.target }}
           ISSUE: ${{ inputs.issue }}
           BASE_SHA: ${{ inputs.base_sha }}

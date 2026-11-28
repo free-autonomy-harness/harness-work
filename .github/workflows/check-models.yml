@@ -4,6 +4,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   smoke:
@@ -25,4 +26,39 @@ jobs:
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           HERMES_IMAGE: ${{ vars.HERMES_IMAGE || 'nousresearch/hermes-agent@sha256:ef0650d523ee1b5ab32c779acabc446d9936869a9932591553688a62bcf0c42f' }}
-        run: python3 scripts/smoke_model.py --route "${{ matrix.route }}"
+        run: |
+          set +e
+          python3 scripts/smoke_model.py --route "${{ matrix.route }}" \
+            --json-out "result-${{ matrix.route }}.json"
+          rc=$?
+          set -e
+          cat "result-${{ matrix.route }}.json"
+          exit $rc
+      - name: Upload smoke result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-${{ matrix.route }}
+          path: result-${{ matrix.route }}.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  gate:
+    needs: smoke
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download smoke results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: smoke-*
+          merge-multiple: true
+          path: smoke-results
+      - name: Publish disabled routes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/publish_smoke.py --results-dir smoke-results

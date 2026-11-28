@@ -301,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-sha", required=True)
     parser.add_argument("--timeout", type=int, default=int(os.environ.get("HERMES_TIMEOUT_SECONDS", "2700")))
     parser.add_argument("--image", default=os.environ.get("HERMES_IMAGE", DEFAULT_IMAGE))
+    parser.add_argument("--disabled-routes", default="", help="comma-separated route names to skip")
     args = parser.parse_args(argv)
 
     chain = json.loads(Path(args.chain).read_text(encoding="utf-8"))
@@ -321,7 +322,11 @@ def main(argv: list[str] | None = None) -> int:
         "attempts": attempts,
     }
 
+    disabled = {name.strip() for name in args.disabled_routes.split(",") if name.strip() not in ("", "none")}
     for route in chain:
+        if route["name"] in disabled:
+            log(f"skip disabled route {route['name']} (from smoke gate)")
+            continue
         log(f"try {route['name']} ({route['provider']}/{route['model']})")
         try:
             attempt = run_route(

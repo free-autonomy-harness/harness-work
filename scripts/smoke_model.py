@@ -22,6 +22,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--chain", default=str(Path(__file__).with_name("model_chain.json")))
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--image", default=os.environ.get("HERMES_IMAGE", DEFAULT_IMAGE))
+    parser.add_argument("--json-out", default=None, help="write machine-readable result here")
     args = parser.parse_args(argv)
 
     chain = json.loads(Path(args.chain).read_text(encoding="utf-8"))
@@ -59,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
         if result.get("exit") == 0 and not text:
             result["exit"] = 1
             result["error"] = "empty model output"
+        if args.json_out:
+            Path(args.json_out).write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         print(json.dumps(result, indent=2, ensure_ascii=False))
         if text:
             print(text[-4000:])
