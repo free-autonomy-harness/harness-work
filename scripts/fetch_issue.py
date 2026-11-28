@@ -32,6 +32,34 @@ def render(template: str, values: dict[str, object]) -> str:
     return out
 
 
+STATE_MARKER = "<!-- harness-state v1 -->"
+
+
+def load_state(token: str, repo: str, issue: int) -> dict | None:
+    """Последнее состояние многошаговой задачи из комментария бота."""
+    path = f"/repos/{repo}/issues/{issue}/comments?per_page=100"
+    comments = api_get(path, token)
+    for comment in reversed(comments):
+        body = str(comment.get("body") or "")
+        if STATE_MARKER not in body:
+            continue
+        payload = body.split(STATE_MARKER, 1)[1].strip()
+        if payload.startswith("```"):
+            parts = payload.split("```")
+            if len(parts) >= 3:
+                payload = parts[1].strip()
+        start, end = payload.find("{"), payload.rfind("}")
+        if start >= 0 and end > start:
+            payload = payload[start : end + 1]
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True, help="owner/harness-core")
@@ -48,6 +76,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     issue = api_get(f"/repos/{args.repo}/issues/{args.issue}", token)
+    state = load_state(token, args.repo, args.issue)
+    iteration = int(state.get("iteration", 0)) + 1 if state else 1
     template = Path(args.template).read_text(encoding="utf-8")
     prompt = render(
         template,
@@ -55,6 +85,12 @@ def main(argv: list[str] | None = None) -> int:
             "TARGET": args.target,
             "BASE_SHA": args.base_sha,
             "ISSUE": args.issue,
+            "ITERATION": iteration,
+            "STATE": (
+                json.dumps(state, indent=2, ensure_ascii=False)
+                if state
+                else "(нет предыдущего состояния — это первый прогон)"
+            ),
             "TITLE": issue.get("title", ""),
             "BODY": issue.get("body") or "",
         },
