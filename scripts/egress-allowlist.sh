@@ -8,6 +8,8 @@
 
 set -euo pipefail
 
+log() { echo "[egress-allowlist] $*" >&2; }
+
 PROVIDER="${1:-}"
 MODEL="${2:-}"
 shift 2
@@ -20,6 +22,20 @@ shift
 
 ORIGINAL_CMD=("$@")
 
+# The pinned Hermes image does not ship iptables, and this wrapper replaces the
+# image entrypoint, so install the tool while egress is still open.
+if ! command -v iptables >/dev/null 2>&1; then
+    log "Installing iptables (missing from the pinned Hermes image)..."
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends iptables
+fi
+
+# /init is bypassed by --entrypoint, so run the image's stage2 hook directly
+# (exactly like entrypoint-dispatch.sh does for non-PID-1 runtimes). Otherwise
+# HERMES_UID/HERMES_GID are not applied and Hermes cannot write to /workspace.
+export PATH="/command:/package/admin/s6/command:${PATH}"
+/opt/hermes/docker/stage2-hook.sh
+
 # Allowed domains per provider (resolved to IPs at runtime)
 declare -A ALLOWED_DOMAINS=(
     ["nvidia"]="integrate.api.nvidia.com"
@@ -28,12 +44,11 @@ declare -A ALLOWED_DOMAINS=(
 
 # Additional always-allowed domains
 ALWAYS_ALLOWED=(
-    "registry.npmjs.org"  # for npm if needed
-    "pypi.org"            # for pip if needed
+    "models.dev"             # Hermes resolves provider metadata (needed for Groq)
+    "registry.npmjs.org"     # for npm if needed
+    "pypi.org"               # for pip if needed
     "files.pythonhosted.org"
 )
-
-log() { echo "[egress-allowlist] $*" >&2; }
 
 # Resolve domain to IPs (IPv4 only for simplicity)
 resolve_domain() {
@@ -87,7 +102,7 @@ iptables -P OUTPUT DROP
 iptables -A OUTPUT -o lo -j ACCEPT
 
 # Allow established/related connections
-iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
 # Allow DNS (UDP 53) - needed for resolution inside container
 iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
@@ -100,11 +115,12 @@ for ip in "${ALLOWED_IPS[@]}"; do
     iptables -A OUTPUT -d "$ip" -p tcp --dport 80 -j ACCEPT
 done
 
-# Log dropped packets (for debugging)
-iptables -A OUTPUT -j LOG --log-prefix "[EGRESS-DROP] " --log-level 4
+# Log dropped packets (for debugging); non-fatal if the kernel lacks xt_LOG.
+iptables -A OUTPUT -j LOG --log-prefix "[EGRESS-DROP] " --log-level 4 2>/dev/null || true
 
 log "Iptables configured. Starting Hermes..."
 log "Command: ${ORIGINAL_CMD[*]}"
 
-# Exec the original command
-exec "${ORIGINAL_CMD[@]}"
+# Let the image's wrapper drop privileges to the remapped hermes user and exec
+# the requested Hermes command.
+exec /opt/hermes/docker/main-wrapper.sh "${ORIGINAL_CMD[@]}"
