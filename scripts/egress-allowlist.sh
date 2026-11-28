@@ -4,7 +4,7 @@
 # then execs the original command.
 #
 # Usage: egress-allowlist.sh <provider> <model> -- <original-command...>
-# Providers: nvidia, groq
+# Provider: nvidia
 
 set -euo pipefail
 
@@ -39,12 +39,11 @@ export PATH="/command:/package/admin/s6/command:${PATH}"
 # Allowed domains per provider (resolved to IPs at runtime)
 declare -A ALLOWED_DOMAINS=(
     ["nvidia"]="integrate.api.nvidia.com"
-    ["groq"]="api.groq.com"
 )
 
 # Additional always-allowed domains
 ALWAYS_ALLOWED=(
-    "models.dev"             # Hermes resolves provider metadata (needed for Groq)
+    "models.dev"             # Hermes resolves provider metadata at startup
     "registry.npmjs.org"     # for npm if needed
     "pypi.org"               # for pip if needed
     "files.pythonhosted.org"

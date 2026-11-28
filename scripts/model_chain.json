@@ -19,12 +19,5 @@
     "model": "nvidia/nemotron-3.5-super-vl-120b-a12b",
     "key_env": "NVIDIA_API_KEY",
     "timeout_seconds": 1200
-  },
-  {
-    "name": "gpt-oss-groq",
-    "provider": "groq",
-    "model": "openai/gpt-oss-120b",
-    "key_env": "GROQ_API_KEY",
-    "timeout_seconds": 900
   }
 ]

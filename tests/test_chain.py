@@ -28,17 +28,14 @@ class ChainTest(unittest.TestCase):
     def test_repository_chain_is_valid(self) -> None:
         chain = json.loads((SCRIPTS / "model_chain.json").read_text(encoding="utf-8"))
         run_chain.validate_chain(chain)
-        self.assertEqual(len(chain), 4)
-        # 3 NVIDIA routes + 1 Groq
+        self.assertEqual(len(chain), 3)
         nvidia_routes = [r for r in chain if r["provider"] == "nvidia"]
-        groq_routes = [r for r in chain if r["provider"] == "groq"]
         self.assertEqual(len(nvidia_routes), 3)
-        self.assertEqual(len(groq_routes), 1)
-        # Check order: GLM -> Ultra -> SuperVL -> Groq
+        self.assertEqual({r["key_env"] for r in chain}, {"NVIDIA_API_KEY"})
+        # Check order: GLM -> Ultra -> SuperVL
         self.assertEqual(chain[0]["name"], "glm-5.3-flash-nvidia")
         self.assertEqual(chain[1]["name"], "nemotron-ultra-nvidia")
         self.assertEqual(chain[2]["name"], "nemotron-super-vl-nvidia")
-        self.assertEqual(chain[3]["name"], "gpt-oss-groq")
 
     def test_nvidia_allowed_models(self) -> None:
         allowed = run_chain.ALLOWED_NVIDIA_MODELS
@@ -54,29 +51,6 @@ class ChainTest(unittest.TestCase):
                 "provider": "nvidia",
                 "model": "nvidia/nemotron-3-ultra-550b-a55b:free",  # Kilo free model - not allowed
                 "key_env": "NVIDIA_API_KEY",
-            }
-        ]
-        with self.assertRaises(run_chain.ChainError):
-            run_chain.validate_chain(chain)
-
-    def test_groq_simple_route_valid(self) -> None:
-        chain = [
-            {
-                "name": "simple",
-                "provider": "groq",
-                "model": run_chain.GROQ_OSS,
-                "key_env": "GROQ_API_KEY",
-            }
-        ]
-        run_chain.validate_chain(chain)
-
-    def test_groq_wrong_model_rejected(self) -> None:
-        chain = [
-            {
-                "name": "bad",
-                "provider": "groq",
-                "model": "meta-llama/llama-3.1-70b",
-                "key_env": "GROQ_API_KEY",
             }
         ]
         with self.assertRaises(run_chain.ChainError):

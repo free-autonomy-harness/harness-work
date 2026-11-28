@@ -24,7 +24,6 @@ DEFAULT_IMAGE = "nousresearch/hermes-agent@sha256:ef0650d523ee1b5ab32c779acabc44
 NVIDIA_GLM53_FLASH = "z-ai/glm-5.3-flash"
 NVIDIA_ULTRA = "nvidia/nemotron-3-ultra-550b-a55b"
 NVIDIA_SUPER_VL = "nvidia/nemotron-3.5-super-vl-120b-a12b"
-GROQ_OSS = "openai/gpt-oss-120b"
 
 ALLOWED_NVIDIA_MODELS = {
     NVIDIA_GLM53_FLASH,
@@ -60,11 +59,6 @@ def validate_chain(chain: list[dict[str, Any]]) -> None:
                 raise ChainError(f"{name}: NVIDIA model not allowed: {model}. Allowed: {sorted(ALLOWED_NVIDIA_MODELS)}")
             if key_env != "NVIDIA_API_KEY":
                 raise ChainError(f"{name}: nvidia route must use NVIDIA_API_KEY")
-        elif provider == "groq":
-            if model != GROQ_OSS:
-                raise ChainError(f"{name}: Groq is only for simple tasks ({GROQ_OSS}), got {model}")
-            if key_env != "GROQ_API_KEY":
-                raise ChainError(f"{name}: groq route must use GROQ_API_KEY")
         else:
             raise ChainError(f"{name}: unsupported provider {provider}")
 

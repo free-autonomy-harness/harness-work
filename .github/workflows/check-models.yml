@@ -16,7 +16,6 @@ jobs:
           - glm-5.3-flash-nvidia
           - nemotron-ultra-nvidia
           - nemotron-super-vl-nvidia
-          - gpt-oss-groq
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,6 +24,5 @@ jobs:
       - name: Smoke ${{ matrix.route }}
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           HERMES_IMAGE: ${{ vars.HERMES_IMAGE || 'nousresearch/hermes-agent@sha256:ef0650d523ee1b5ab32c779acabc446d9936869a9932591553688a62bcf0c42f' }}
         run: python3 scripts/smoke_model.py --route "${{ matrix.route }}"
