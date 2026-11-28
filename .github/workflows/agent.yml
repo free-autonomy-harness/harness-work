@@ -27,6 +27,11 @@ on:
         description: target default branch
         required: true
         type: string
+      verify_json:
+        description: JSON array of target verify checks
+        required: false
+        type: string
+        default: "[]"
 
 permissions:
   contents: read
@@ -111,6 +116,7 @@ jobs:
           TARGET: ${{ inputs.target }}
           ISSUE: ${{ inputs.issue }}
           BASE_SHA: ${{ inputs.base_sha }}
+          VERIFY_JSON: ${{ inputs.verify_json }}
         run: |
           bash work/scripts/run_agent.sh \
             "$PWD/target" \
@@ -119,7 +125,8 @@ jobs:
             "$PWD/out/prompt.txt" \
             "$TARGET" \
             "$ISSUE" \
-            "$BASE_SHA"
+            "$BASE_SHA" \
+            "$VERIFY_JSON"
 
       - name: Install gitleaks
         if: always()

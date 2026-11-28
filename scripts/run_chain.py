@@ -138,6 +138,75 @@ def make_patch(base: Path, workspace: Path, out_patch: Path) -> tuple[Path, list
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def verify_patch(
+    base: Path, workspace: Path, checks: list[dict[str, Any]], target: str = ""
+) -> list[dict[str, Any]]:
+    """Прогнать verify-команды target по патчу до того, как считать маршрут успешным.
+
+    Проверки идут в отдельном worktree на base SHA: workspace служит только
+    источником файлов, а поведение совпадает с проверкой в publish.
+    """
+    if not checks:
+        return []
+    tmp = Path(tempfile.mkdtemp(prefix="harness-verify-"))
+    worktree = tmp / "verifyrepo"
+    results: list[dict[str, Any]] = []
+    env = os.environ.copy()
+    env.setdefault("CI", "1")
+    if target:
+        env["HARNESS_TARGET"] = target
+    try:
+        added = subprocess.run(
+            ["git", "-C", str(base), "worktree", "add", "--detach", str(worktree), "HEAD"],
+            text=True,
+            capture_output=True,
+        )
+        if added.returncode != 0:
+            raise ChainError(f"verify worktree add failed: {added.stderr[-2000:]}")
+        synced = subprocess.run(
+            ["rsync", "-a", "--delete", "--exclude", ".git", f"{workspace}/", f"{worktree}/"],
+            text=True,
+            capture_output=True,
+        )
+        if synced.returncode != 0:
+            raise ChainError(f"verify worktree sync failed: {synced.stderr[-2000:]}")
+        for check in checks:
+            name = str(check.get("name") or "check")
+            command = str(check.get("run") or "")
+            timeout = int(check.get("timeout_seconds") or 600)
+            started = time.monotonic()
+            try:
+                proc = subprocess.run(
+                    ["bash", "-lc", command],
+                    cwd=str(worktree),
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    timeout=timeout,
+                )
+                ok = proc.returncode == 0
+                detail = (proc.stderr or proc.stdout or "")[-2000:]
+            except subprocess.TimeoutExpired:
+                ok = False
+                detail = f"timeout after {timeout}s"
+            results.append(
+                {
+                    "name": name,
+                    "ok": ok,
+                    "duration_s": round(time.monotonic() - started, 2),
+                    "error": None if ok else detail,
+                }
+            )
+        return results
+    finally:
+        subprocess.run(
+            ["git", "-C", str(base), "worktree", "remove", "--force", str(worktree)],
+            text=True,
+            capture_output=True,
+        )
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def docker_command(
     route: dict[str, Any],
     *,
@@ -190,6 +259,11 @@ def docker_command(
         f"HERMES_GID={gid}",
         "-e",
         "PYTHONUNBUFFERED=1",
+        # Образ задаёт HERMES_WRITE_SAFE_ROOT=/opt/data, а target смонтирован
+        # в /workspace. Без переопределения write_file не может создать файлы
+        # в рабочем дереве, из которого собирается патч.
+        "-e",
+        f"HERMES_WRITE_SAFE_ROOT=/workspace{os.pathsep}/opt/data",
         "--env-file",
         str(env_file),
         "-v",
@@ -302,7 +376,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=int(os.environ.get("HERMES_TIMEOUT_SECONDS", "2700")))
     parser.add_argument("--image", default=os.environ.get("HERMES_IMAGE", DEFAULT_IMAGE))
     parser.add_argument("--disabled-routes", default="", help="comma-separated route names to skip")
+    parser.add_argument("--verify-json", default="", help="JSON-список verify-проверок target")
     args = parser.parse_args(argv)
+
+    verify_checks: list[dict[str, Any]] = []
+    if args.verify_json:
+        try:
+            parsed = json.loads(args.verify_json)
+        except json.JSONDecodeError as exc:
+            raise ChainError(f"invalid --verify-json: {exc}") from exc
+        if not isinstance(parsed, list) or not all(isinstance(c, dict) for c in parsed):
+            raise ChainError("--verify-json must be a JSON list of objects")
+        verify_checks = [c for c in parsed if c.get("run")]
 
     chain = json.loads(Path(args.chain).read_text(encoding="utf-8"))
     validate_chain(chain)
@@ -350,6 +435,23 @@ def main(argv: list[str] | None = None) -> int:
             attempt["error"] = str(exc)
             log(f"route {route['name']} produced no patch: {exc}")
             continue
+
+        if verify_checks:
+            try:
+                check_results = verify_patch(base, workspace, verify_checks, args.target)
+            except ChainError as exc:
+                attempt["error"] = str(exc)
+                log(f"route {route['name']} could not be verified: {exc}")
+                continue
+            attempt["verify"] = check_results
+            failed = [c for c in check_results if not c["ok"]]
+            if failed:
+                detail = "; ".join(
+                    f"{c['name']}: {c.get('error') or 'exit!=0'}" for c in failed
+                )
+                attempt["error"] = f"verify failed: {detail}"
+                log(f"route {route['name']} rejected by verify: {detail}")
+                continue
 
         usage = out_dir / f"usage-{route['name']}.json"
         if usage.exists():

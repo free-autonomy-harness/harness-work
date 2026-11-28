@@ -123,6 +123,50 @@ class ChainTest(unittest.TestCase):
         self.assertIn("--entrypoint", joined)
         self.assertIn("--cap-add=NET_ADMIN", joined)
 
+    def test_docker_command_allows_writes_to_workspace(self) -> None:
+        route = {
+            "name": "nvidia",
+            "provider": "nvidia",
+            "model": run_chain.NVIDIA_GLM53_FLASH,
+            "key_env": "NVIDIA_API_KEY",
+        }
+        cmd = run_chain.docker_command(
+            route,
+            prompt="hi",
+            workspace=Path("/tmp/ws"),
+            out_dir=Path("/tmp/out"),
+            env_file=Path("/tmp/env"),
+            image="image@sha256:abc",
+            container_name="harness-test",
+        )
+        joined = " ".join(cmd)
+        self.assertIn("HERMES_WRITE_SAFE_ROOT=/workspace", joined)
+        self.assertIn("/opt/data", joined)
+
+    def test_verify_patch_checks_workspace_files(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        base = Path(tmp.name) / "base"
+        workspace = Path(tmp.name) / "workspace"
+        base.mkdir()
+        git(base, "init", "-q")
+        git(base, "config", "user.name", "test")
+        git(base, "config", "user.email", "test@local")
+        (base / "no.md").write_text("ddd\n", encoding="utf-8")
+        git(base, "add", "-A")
+        git(base, "commit", "-qm", "base")
+
+        run_chain.reset_workspace(base, workspace)
+        checks = [{"name": "readme-exists", "run": "test -s README.md", "timeout_seconds": 60}]
+
+        results = run_chain.verify_patch(base, workspace, checks)
+        self.assertFalse(results[0]["ok"])
+
+        (workspace / "README.md").write_text("# Sandbox\n", encoding="utf-8")
+        results = run_chain.verify_patch(base, workspace, checks)
+        self.assertTrue(results[0]["ok"])
+        self.assertFalse((base / "README.md").exists())
+        tmp.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
